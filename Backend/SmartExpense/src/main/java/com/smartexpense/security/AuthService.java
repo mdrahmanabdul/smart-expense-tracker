@@ -1,57 +1,68 @@
 package com.smartexpense.security;
 
+import com.smartexpense.dtos.AuthDTO.AuthResponse;
 import com.smartexpense.dtos.AuthDTO.LoginRequest;
 import com.smartexpense.dtos.AuthDTO.RegisterRequest;
 import com.smartexpense.entities.Role;
 import com.smartexpense.entities.UserEntity;
+import com.smartexpense.repositories.RoleRepository;
 import com.smartexpense.repositories.UserRepository;
 
-import org.springframework.security.authentication.BadCredentialsException;
+import org.springframework.http.HttpStatus;
+import org.springframework.security.authentication.AuthenticationManager;
+import org.springframework.security.authentication.UsernamePasswordAuthenticationToken;
+import org.springframework.security.core.Authentication;
+import org.springframework.security.core.userdetails.UserDetails;
 import org.springframework.security.crypto.password.PasswordEncoder;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
+import org.springframework.web.server.ResponseStatusException;
 
 @Service
 public class AuthService {
-    private final UserRepository repo;
-    private final PasswordEncoder encoder;
+
+    private final UserRepository userRepo;
+    private final RoleRepository roleRepo;
+    private final PasswordEncoder passwordEncoder;
+    private final AuthenticationManager authManager;
     private final JwtService jwtService;
 
-    // Standard constructor injection replaces @RequiredArgsConstructor
-    public AuthService(UserRepository repo, PasswordEncoder encoder, JwtService jwtService) {
-        this.repo = repo;
-        this.encoder = encoder;
+    public AuthService(UserRepository userRepo,
+                       RoleRepository roleRepo,
+                       PasswordEncoder passwordEncoder,
+                       AuthenticationManager authManager,
+                       JwtService jwtService) {
+        this.userRepo = userRepo;
+        this.roleRepo = roleRepo;
+        this.passwordEncoder = passwordEncoder;
+        this.authManager = authManager;
         this.jwtService = jwtService;
     }
 
     @Transactional
     public void register(RegisterRequest req) {
-        if (repo.existsByUsername(req.username())) {
-            throw new IllegalArgumentException("Username already taken");
+        if (userRepo.existsByUsername(req.username())) {
+            throw new ResponseStatusException(HttpStatus.CONFLICT, "Username already taken");
         }
 
         UserEntity user = new UserEntity();
         user.setUsername(req.username());
-        user.setPassword(encoder.encode(req.password())); // BCrypt using injected encoder
+        user.setPassword(passwordEncoder.encode(req.password()));
         user.setEnabled(true);
 
-        // Default role setup (ensure Role entity and relationship are managed correctly)
-        Role role = new Role();
-        role.setName("ROLE_USER");
-        user.getRoles().add(role);
-        
-        repo.save(user);
+        // ✅ Fetch role from DB (avoid duplicates)
+        Role userRole = roleRepo.findByName("ROLE_USER")
+                .orElseThrow(() -> new ResponseStatusException(HttpStatus.INTERNAL_SERVER_ERROR, "Default role not found"));
+        user.getRoles().add(userRole);
+
+        userRepo.save(user);
     }
 
-    public String login(LoginRequest req) {
-        UserEntity user = repo.findByUsername(req.username())
-            .orElseThrow(() -> new BadCredentialsException("Bad credentials"));
-        
-        // Use the injected encoder for password verification
-        if (!user.isEnabled() || !encoder.matches(req.password(), user.getPassword())) {
-            throw new BadCredentialsException("Bad credentials");
-        }
+    public AuthResponse login(LoginRequest req) {
+        Authentication auth = authManager.authenticate(
+                new UsernamePasswordAuthenticationToken(req.username(), req.password()));
 
-        return jwtService.generateToken(user);
+        String token = jwtService.generateToken((UserDetails) auth.getPrincipal());
+        return new AuthResponse(token);
     }
 }
