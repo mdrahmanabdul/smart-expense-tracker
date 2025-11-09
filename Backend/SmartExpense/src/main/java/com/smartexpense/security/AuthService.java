@@ -10,6 +10,7 @@ import com.smartexpense.repositories.UserRepository;
 
 import org.springframework.http.HttpStatus;
 import org.springframework.security.authentication.AuthenticationManager;
+import org.springframework.security.authentication.BadCredentialsException;
 import org.springframework.security.authentication.UsernamePasswordAuthenticationToken;
 import org.springframework.security.core.Authentication;
 import org.springframework.security.core.userdetails.UserDetails;
@@ -44,9 +45,13 @@ public class AuthService {
         if (userRepo.existsByUsername(req.username())) {
             throw new ResponseStatusException(HttpStatus.CONFLICT, "Username already taken");
         }
+        if (userRepo.existsByEmail(req.email())) {
+            throw new ResponseStatusException(HttpStatus.CONFLICT, "Email already registered");
+        }
 
         UserEntity user = new UserEntity();
         user.setUsername(req.username());
+        user.setEmail(req.email());
         user.setPassword(passwordEncoder.encode(req.password()));
         user.setEnabled(true);
 
@@ -59,10 +64,19 @@ public class AuthService {
     }
 
     public AuthResponse login(LoginRequest req) {
-        Authentication auth = authManager.authenticate(
-                new UsernamePasswordAuthenticationToken(req.username(), req.password()));
+        // 1️⃣ Try to find user by username or email
+        UserEntity user = userRepo.findByUsername(req.username())
+                .or(() -> userRepo.findByEmail(req.username()))
+                .orElseThrow(() -> new BadCredentialsException("Invalid username/email or password"));
 
-        String token = jwtService.generateToken((UserDetails) auth.getPrincipal());
+        // 2️⃣ Validate password
+        if (!passwordEncoder.matches(req.password(), user.getPassword())) {
+            throw new BadCredentialsException("Invalid username/email or password");
+        }
+        
+        // 3️⃣ Generate JWT
+        String token = jwtService.generateToken(user);
         return new AuthResponse(token);
     }
+
 }
